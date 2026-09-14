@@ -38,6 +38,7 @@ _TOKEN_ROUTES: tuple[str, ...] = (
     "/api/model/set",
     "/api/skills",
     "/api/cron/jobs",
+    "/api/sessions",
 )
 
 LAST_SKIP_REASON: str = ""

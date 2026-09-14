@@ -98,7 +98,8 @@ class TestRegister:
         assert is_token_route("/api/model/info")
         assert is_token_route("/api/skills")
         assert is_token_route("/api/cron/jobs")
+        assert is_token_route("/api/sessions")
         # Never widened to unrelated dashboard surfaces.
         assert not is_token_route("/api/auth/ws-ticket")
         assert not is_token_route("/")
-        assert not is_token_route("/api/sessions")
+        assert not is_token_route("/api/env/reveal")
