@@ -70,6 +70,12 @@ class TestApiServerKeyReachesGatedDashboardRoutes:
         r = gated_app_with_api_server_key.get("/api/model/info")
         assert r.status_code == 401
 
+    def test_correct_bearer_key_reaches_sessions_list_with_no_cookie(
+        self, gated_app_with_api_server_key):
+        r = gated_app_with_api_server_key.get(
+            "/api/sessions", headers={"Authorization": "Bearer the-real-api-server-key"})
+        assert r.status_code == 200, r.text
+
     def test_bearer_key_does_not_widen_unrelated_gated_endpoint(
         self, gated_app_with_api_server_key):
         """Regression: this provider must not become a skeleton key for the whole gated
