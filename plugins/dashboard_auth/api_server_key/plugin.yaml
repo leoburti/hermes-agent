@@ -1,0 +1,7 @@
+name: api_server_key
+version: 1.0.0
+description: "Dashboard token-auth provider — accepts the existing API_SERVER_KEY as a Bearer token on a small, explicit set of Dashboard JSON API routes (model info/options/set, skills, cron jobs). Lets a native client that already authenticates the Gateway API Server (Hermes Android, hermes-desktop) reach the Dashboard-only management surface on the same host without a browser cookie login. Registers no session/login flow — token auth only, narrow route allowlist."
+author: NousResearch
+kind: backend
+requires_env:
+  - API_SERVER_KEY
