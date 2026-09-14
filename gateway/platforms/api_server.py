@@ -2769,14 +2769,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         title_filter = (request.query.get("title") or "").strip() or None
         include_hidden = bool(title_filter) and _coerce_request_bool(
             request.query.get("include_hidden"), default=False)
+        # Same human-facing deny-list as tui_gateway's session.list (methods_session._LISTING_DENY_SOURCES):
+        # sub-agent/kanban-worker rows must not leak into this REST surface either. An explicit
+        # ?source=kanban request is a surface that OWNS hidden sessions (kanban board UI) and bypasses it.
+        exclude_sources = None if source else ["kanban", "tool"]
 
         async def _list() -> list:
             # include_pinned back-fills pins past the recency window; search_query pushes the
             # title needle into SQL (substring) so a hidden/old row is found, exact match below.
             rows = await asyncio.to_thread(
-                db.list_sessions_rich, source=source, limit=limit, offset=offset,
-                include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
+                db.list_sessions_rich, source=source, exclude_sources=exclude_sources, limit=limit,
+                offset=offset, include_children=include_children, order_by_last_active=True,
+                include_pinned=True, search_query=title_filter, include_hidden=include_hidden)
             if title_filter:
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
