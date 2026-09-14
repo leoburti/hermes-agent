@@ -977,11 +977,13 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
 @pytest.mark.asyncio
 async def test_list_sessions_hides_kanban_worker_sessions_by_default(adapter, session_db):
     """GET /api/sessions must apply the same human-facing deny-list as tui_gateway's
-    session.list (_LISTING_DENY_SOURCES = {"kanban", "tool"}) — regression for the dashboard
-    and mobile clients leaking kanban-worker sessions into the human session list."""
+    session.list (_LISTING_DENY_SOURCES = {"kanban", "tool", "cron"}) — regression for the
+    dashboard and mobile clients leaking kanban-worker and cron-watchdog sessions into the
+    human session list."""
     human_id = session_db.create_session("human-chat-session", "telegram")
     kanban_id = session_db.create_session("kanban-worker-session", "kanban")
     tool_id = session_db.create_session("tool-worker-session", "tool")
+    cron_id = session_db.create_session("cron-watchdog-session", "cron")
     app = _create_session_app(adapter)
 
     async with TestClient(TestServer(app)) as cli:
@@ -992,6 +994,23 @@ async def test_list_sessions_hides_kanban_worker_sessions_by_default(adapter, se
     assert human_id in ids
     assert kanban_id not in ids
     assert tool_id not in ids
+    assert cron_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_source_filter_still_reaches_cron_sessions(adapter, session_db):
+    """An explicit ?source=cron request is a surface that OWNS hidden sessions (watchdog/cron
+    monitoring UI) — the deny-list must not override an explicit source filter."""
+    cron_id = session_db.create_session("cron-watchdog-session", "cron")
+    session_db.create_session("human-chat-session", "telegram")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions", params={"source": "cron"})
+        assert resp.status == 200, await resp.text()
+        ids = {row["id"] for row in (await resp.json())["data"]}
+
+    assert ids == {cron_id}
 
 
 @pytest.mark.asyncio

@@ -2772,7 +2772,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Same human-facing deny-list as tui_gateway's session.list (methods_session._LISTING_DENY_SOURCES):
         # sub-agent/kanban-worker rows must not leak into this REST surface either. An explicit
         # ?source=kanban request is a surface that OWNS hidden sessions (kanban board UI) and bypasses it.
-        exclude_sources = None if source else ["kanban", "tool"]
+        exclude_sources = None if source else ["kanban", "tool", "cron"]
 
         async def _list() -> list:
             # include_pinned back-fills pins past the recency window; search_query pushes the
