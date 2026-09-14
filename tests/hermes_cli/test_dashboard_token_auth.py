@@ -118,10 +118,13 @@ class _FakeClient:
 class _FakeRequest:
     """Minimal Request stand-in for the seam (no real Starlette needed)."""
 
-    def __init__(self, path="/api/gateway/drain", headers=None):
+    def __init__(self, path="/api/gateway/drain", headers=None, cookies=None):
         self.url = _FakeURL(path)
         self.headers = headers or {}
         self.client = _FakeClient()
+        # A real Request always exposes cookies; the seam reads them to decide whether a
+        # bearer-less caller should be judged by the cookie gate instead.
+        self.cookies = cookies or {}
 
         class _State:
             pass
@@ -233,5 +236,69 @@ def test_seam_rejects_wrong_token_401():
     )
     resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
     assert resp.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Templated route registration
+#
+# A native client reads one chat through /api/sessions/<id>/messages, whose id
+# segment varies per request. Exact-string registration can never cover it, so
+# a registered template must match the concrete path it was written for — and
+# nothing else. Regression for the Hermes Android "Failed to load messages /
+# session_expired" report.
+# --------------------------------------------------------------------------
+
+
+_MESSAGES_TEMPLATE = "/api/sessions/{session_id}/messages"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/sessions/20260914_161658_73756b/messages",
+        "/api/sessions/cron_fb371659033d_20260914_191226/messages",
+    ],
+)
+def test_templated_route_matches_any_value_in_the_placeholder(path):
+    token_auth.register_token_route(_MESSAGES_TEMPLATE)
+    assert token_auth.is_token_route(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/sessions",                       # the listing is its own registration
+        "/api/sessions/abc",                   # GET detail / DELETE — never registered here
+        "/api/sessions/abc/export",            # sibling subresource
+        "/api/sessions/abc/messages/extra",    # deeper than the template
+        "/api/sessions//messages",             # empty placeholder
+        "/api/env/reveal",                     # unrelated gated route
+    ],
+)
+def test_templated_route_does_not_widen_to_other_paths(path):
+    """A template must not become a prefix wildcard: every neighbouring path
+    stays unregistered, so the token seam never publishes a route nobody opted in."""
+    token_auth.register_token_route(_MESSAGES_TEMPLATE)
+    assert token_auth.is_token_route(path) is False
+
+
+def test_templated_route_still_refuses_a_request_with_no_credential():
+    """Fail-closed contract survives templating: matching the template only decides
+    WHO judges the request, never that it is authenticated."""
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route(_MESSAGES_TEMPLATE)
+    req = _FakeRequest(path="/api/sessions/abc/messages", headers={})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 401
+
+
+def test_templated_route_accepts_the_valid_bearer():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route(_MESSAGES_TEMPLATE)
+    req = _FakeRequest(
+        path="/api/sessions/abc/messages", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
 
 

@@ -39,6 +39,11 @@ _TOKEN_ROUTES: tuple[str, ...] = (
     "/api/skills",
     "/api/cron/jobs",
     "/api/sessions",
+    # Reading one conversation. The list alone is not enough: without this the chat list
+    # renders and every chat opened from it fails with session_expired. Templated because
+    # the id segment varies per request; the placeholder matches exactly one segment, so
+    # sibling routes (/api/sessions/{id}, .../export) stay unregistered.
+    "/api/sessions/{session_id}/messages",
 )
 
 LAST_SKIP_REASON: str = ""

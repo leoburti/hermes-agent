@@ -26,7 +26,32 @@ from hermes_cli.dashboard_auth.request_utils import (
 _log = logging.getLogger(__name__)
 
 _token_routes: set[str] = set()  # exact paths that accept bearer-token auth
+# Registered templates, pre-split into segments: ("api", "sessions", "{session_id}", "messages").
+# A placeholder segment matches exactly one non-empty path segment — never a prefix wildcard.
+_token_route_templates: set[tuple[str, ...]] = set()
 _lock = threading.Lock()
+
+
+def _split(path: str) -> tuple[str, ...]:
+    return tuple(path.strip("/").split("/"))
+
+
+def _is_template(path: str) -> bool:
+    return "{" in path
+
+
+def _template_matches(template: tuple[str, ...], segments: tuple[str, ...]) -> bool:
+    """True when ``segments`` fills every placeholder of ``template`` and nothing else.
+
+    Arity is fixed (a template never spans a different number of segments) and a
+    placeholder never matches an empty segment, so ``/api/sessions//messages`` and
+    ``/api/sessions/x/messages/extra`` stay unregistered.
+    """
+    if len(template) != len(segments):
+        return False
+    return all(
+        bool(actual) if expected.startswith("{") and expected.endswith("}") else expected == actual
+        for expected, actual in zip(template, segments))
 
 
 def _has_session_cookie(request: Request) -> bool:
@@ -40,21 +65,37 @@ def _has_session_cookie(request: Request) -> bool:
 
 
 def register_token_route(path: str) -> None:
-    """Mark ``path`` (exact match) as token-authable. Idempotent; does NOT make the route public."""
+    """Mark ``path`` as token-authable. Idempotent; does NOT make the route public.
+
+    ``path`` is an exact path, or a template carrying ``{placeholder}`` segments for a
+    route whose id varies per request (``/api/sessions/{session_id}/messages``). A
+    placeholder matches exactly ONE non-empty segment, so registering a template never
+    widens the surface to a sibling or deeper route.
+    """
     with _lock:
-        _token_routes.add(path)
+        if _is_template(path):
+            _token_route_templates.add(_split(path))
+        else:
+            _token_routes.add(path)
 
 
 def is_token_route(path: str) -> bool:
-    """True if ``path`` was registered as token-authable (exact match)."""
+    """True if ``path`` was registered as token-authable, exactly or via a template."""
     with _lock:
-        return path in _token_routes
+        if path in _token_routes:
+            return True
+        templates = tuple(_token_route_templates)
+    if not templates:
+        return False
+    segments = _split(path)
+    return any(_template_matches(template, segments) for template in templates)
 
 
 def clear_token_routes() -> None:
     """Test-only: drop all registered token routes."""
     with _lock:
         _token_routes.clear()
+        _token_route_templates.clear()
 
 
 def authenticate_token(request: Request) -> Tuple[Optional[TokenPrincipal], Optional[str]]:

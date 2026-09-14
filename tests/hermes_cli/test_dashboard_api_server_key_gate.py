@@ -76,6 +76,32 @@ class TestApiServerKeyReachesGatedDashboardRoutes:
             "/api/sessions", headers={"Authorization": "Bearer the-real-api-server-key"})
         assert r.status_code == 200, r.text
 
+    def test_correct_bearer_key_reaches_a_session_message_page(
+        self, gated_app_with_api_server_key):
+        """The list and the message page must agree: reaching only the list renders a
+        chat list whose every conversation fails to open ("Failed to load messages",
+        session_expired). The id segment varies per request, so this route is covered
+        by a template, not an exact string."""
+        r = gated_app_with_api_server_key.get(
+            "/api/sessions/any_session_id/messages",
+            headers={"Authorization": "Bearer the-real-api-server-key"})
+        assert r.status_code != 401, r.text
+
+    def test_message_page_without_credential_is_still_refused(
+        self, gated_app_with_api_server_key):
+        """Covering the route by template must not publish it: no credential, no access."""
+        r = gated_app_with_api_server_key.get("/api/sessions/any_session_id/messages")
+        assert r.status_code == 401, r.text
+
+    def test_bearer_key_does_not_reach_the_session_detail_route(
+        self, gated_app_with_api_server_key):
+        """The template covers .../messages only — a neighbouring session route that was
+        never registered keeps its own gate."""
+        r = gated_app_with_api_server_key.get(
+            "/api/sessions/any_session_id",
+            headers={"Authorization": "Bearer the-real-api-server-key"})
+        assert r.status_code == 401, r.text
+
     def test_bearer_key_does_not_widen_unrelated_gated_endpoint(
         self, gated_app_with_api_server_key):
         """Regression: this provider must not become a skeleton key for the whole gated
