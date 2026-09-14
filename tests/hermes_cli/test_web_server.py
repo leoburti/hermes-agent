@@ -2099,6 +2099,48 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_get_sessions_hides_automation_sources_by_default(self):
+        """GET /api/sessions (dashboard ChatSessionList / ChatSidebar) must default to hiding
+        cron/kanban/tool/automation sessions, mirroring the gateway REST deny-list — regression
+        for kanban-worker and cron-watchdog sessions leaking into the dashboard chat switcher
+        (no explicit exclude_sources was ever passed by that surface)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="human-chat", source="telegram")
+            db.create_session(session_id="kanban-worker", source="kanban")
+            db.create_session(session_id="cron-watchdog", source="cron")
+            db.create_session(session_id="tool-worker", source="tool")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=50&offset=0")
+        assert resp.status_code == 200
+        ids = {s["id"] for s in resp.json()["sessions"]}
+
+        assert "human-chat" in ids
+        assert "kanban-worker" not in ids
+        assert "cron-watchdog" not in ids
+        assert "tool-worker" not in ids
+
+    def test_get_sessions_explicit_source_still_reaches_kanban(self):
+        """An explicit ?source=kanban request (kanban board UI) still owns hidden sessions —
+        the default deny-list must not override it."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="human-chat", source="telegram")
+            db.create_session(session_id="kanban-worker", source="kanban")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=50&offset=0&source=kanban")
+        assert resp.status_code == 200
+        ids = {s["id"] for s in resp.json()["sessions"]}
+        assert ids == {"kanban-worker"}
+
     def test_profiles_sessions_rejects_negative_limit(self):
         """Same guard on the cross-profile aggregate route — negative limit
         previously bypassed the per-profile 500-row clamp entirely."""

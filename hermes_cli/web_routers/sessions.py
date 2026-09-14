@@ -193,6 +193,14 @@ def get_sessions(
             # the cron-jobs section (source=cron) into two independent lists.
             source_list = _csv(sources)
             exclude_list = _csv(exclude_sources)
+            # Same human-facing deny-list as the gateway REST surface
+            # (gateway.platforms.api_server / tui_gateway.methods_session
+            # _LISTING_DENY_SOURCES): cron-watchdog and kanban-worker rows must
+            # not leak into this dashboard listing either. An explicit
+            # ?source=... or ?sources=... request is a surface that OWNS
+            # hidden sessions (kanban board UI, cron-jobs panel) and bypasses it.
+            if not source and not source_list and not exclude_list:
+                exclude_list = ["kanban", "tool", "cron"]
             scope = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
