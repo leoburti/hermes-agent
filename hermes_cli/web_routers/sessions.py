@@ -227,7 +227,13 @@ def get_sessions(
                 s["pinned"] = bool(s.get("pinned"))
             if not full:
                 _strip_session_list_rows(sessions)
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            # ``data`` is an additive alias of ``sessions`` for REST clients that
+            # read the OpenAI-style envelope (the Android app's ApiClient does
+            # ``json['data'] as List? ?? []``, so a missing key renders an empty
+            # chat list instead of an error). The dashboard SPA and the Desktop
+            # keep reading ``sessions``; never drop either key.
+            return {"sessions": sessions, "data": sessions,
+                    "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
     except HTTPException:
@@ -566,6 +572,10 @@ async def get_session_messages(
         # owner it already routes the session by.
         "profile": _serving_profile(profile),
         "messages": projected_messages,
+        # Additive alias, same contract as the listing endpoint: REST clients
+        # reading ``data`` (Android ApiClient) would otherwise open every chat
+        # empty. Both keys point at the same projected list.
+        "data": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,
             "order": order or ("latest" if limit is None else "oldest"),
