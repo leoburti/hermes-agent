@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 
 from hermes_cli.dashboard_auth import DashboardAuthProvider, ProviderError, TokenPrincipal
 from hermes_cli.dashboard_auth.token_auth import register_token_route
-from plugins.dashboard_auth._shared import NonInteractiveMixin, SkipRegistration, resolve_env_or_cfg
+from plugins.dashboard_auth._shared import NonInteractiveMixin, SkipRegistration
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-api-server-key"
@@ -78,9 +79,7 @@ class ApiServerKeyTokenProvider(NonInteractiveMixin, DashboardAuthProvider):
 
 
 def _settings() -> dict:
-    from agent.secret_scope import get_secret
-
-    api_key = resolve_env_or_cfg("API_SERVER_KEY", get_secret("API_SERVER_KEY", "") or "")
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
     if not api_key:
         raise SkipRegistration("API_SERVER_KEY not configured; token route stays 401-only")
     return {"api_key": api_key}
