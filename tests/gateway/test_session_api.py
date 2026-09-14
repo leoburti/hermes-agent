@@ -972,3 +972,39 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_hides_kanban_worker_sessions_by_default(adapter, session_db):
+    """GET /api/sessions must apply the same human-facing deny-list as tui_gateway's
+    session.list (_LISTING_DENY_SOURCES = {"kanban", "tool"}) — regression for the dashboard
+    and mobile clients leaking kanban-worker sessions into the human session list."""
+    human_id = session_db.create_session("human-chat-session", "telegram")
+    kanban_id = session_db.create_session("kanban-worker-session", "kanban")
+    tool_id = session_db.create_session("tool-worker-session", "tool")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions")
+        assert resp.status == 200, await resp.text()
+        ids = {row["id"] for row in (await resp.json())["data"]}
+
+    assert human_id in ids
+    assert kanban_id not in ids
+    assert tool_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_source_filter_still_reaches_kanban_sessions(adapter, session_db):
+    """An explicit ?source=kanban request is a surface that OWNS hidden sessions (kanban board
+    UI) — the deny-list must not override an explicit source filter."""
+    kanban_id = session_db.create_session("kanban-worker-session", "kanban")
+    session_db.create_session("human-chat-session", "telegram")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions", params={"source": "kanban"})
+        assert resp.status == 200, await resp.text()
+        ids = {row["id"] for row in (await resp.json())["data"]}
+
+    assert ids == {kanban_id}
