@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 from hermes_cli.dashboard_auth import list_token_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from hermes_cli.dashboard_auth.cookies import read_session_cookies
 from hermes_cli.dashboard_auth.request_utils import (
     client_ip as _client_ip, extract_bearer as extract_bearer_token, unreachable_response)
 
@@ -26,6 +27,16 @@ _log = logging.getLogger(__name__)
 
 _token_routes: set[str] = set()  # exact paths that accept bearer-token auth
 _lock = threading.Lock()
+
+
+def _has_session_cookie(request: Request) -> bool:
+    """True when the caller carries either session cookie, whatever its validity.
+
+    Presence alone decides who the cookie gate gets to judge; ``gated_auth_middleware``
+    owns the verdict, so an expired or forged cookie is rejected there, not waved through.
+    """
+    access_token, refresh_token = read_session_cookies(request)
+    return bool(access_token or refresh_token)
 
 
 def register_token_route(path: str) -> None:
@@ -75,9 +86,20 @@ def authenticate_token(request: Request) -> Tuple[Optional[TokenPrincipal], Opti
 async def token_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Pass-through for unregistered paths; for a token route, valid token -> attach principal +
-    flag, unreachable -> 503, else 401."""
+    flag, unreachable -> 503, else 401.
+
+    A caller that presents NO bearer token but DOES carry a session cookie is handed to
+    ``gated_auth_middleware`` to be judged on that cookie: registering a route for bearer
+    auth is additive and must not revoke the cookie access it already had (the mobile app
+    logs in via ``/auth/password-login`` and then calls these routes with the cookie alone).
+    A caller with neither credential still gets the 401 here — never widen an unauthenticated
+    request, and in particular never let a route reach a public-path exemption it would not
+    have reached on its own.
+    """
     path = request.url.path
     if not is_token_route(path):
+        return await call_next(request)
+    if not extract_bearer_token(request) and _has_session_cookie(request):
         return await call_next(request)
     principal, unreachable = authenticate_token(request)
     if principal is not None:

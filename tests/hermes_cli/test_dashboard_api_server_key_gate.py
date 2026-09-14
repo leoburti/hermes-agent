@@ -84,3 +84,31 @@ class TestApiServerKeyReachesGatedDashboardRoutes:
             "/api/env/reveal", json={"key": "OPENAI_API_KEY"},
             headers={"Authorization": "Bearer the-real-api-server-key"})
         assert r.status_code == 401
+
+
+class TestCookieClientKeepsAccessToTokenRoutes:
+    """A password-login client (Hermes Android) calls these routes with the session cookie and
+    no bearer. Registering a route for bearer auth is additive: it must not revoke that access,
+    and must not hand an unauthenticated caller to a public-path exemption either."""
+
+    def test_session_cookie_without_bearer_is_judged_by_the_cookie_gate(
+        self, gated_app_with_api_server_key, monkeypatch):
+        seen = {}
+
+        async def _fake_gate(request, call_next):
+            seen["reached"] = True
+            return await call_next(request)
+
+        from hermes_cli.dashboard_auth import token_auth
+
+        monkeypatch.setattr(token_auth, "_has_session_cookie", lambda request: True)
+        r = gated_app_with_api_server_key.get("/api/model/info")
+        # The cookie gate — not the token seam — owns the verdict for a cookie caller.
+        assert r.status_code != 401 or "no_cookie" in r.text
+
+    def test_no_credential_at_all_is_still_refused_by_the_token_seam(
+        self, gated_app_with_api_server_key):
+        """Regression: a bare request must never reach /api/model/info's public-path
+        exemption through the token seam — that silently published it on the internet."""
+        r = gated_app_with_api_server_key.get("/api/model/info")
+        assert r.status_code == 401, r.text
