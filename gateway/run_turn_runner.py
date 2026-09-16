@@ -1318,10 +1318,14 @@ class TurnRunner:
                 flush(timeout=3.0)
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
+        metadata = dict(ctx._status_thread_metadata or {})
+        if not metadata.get("session_title") and getattr(ctx, "_session_db", None) is not None:
+            with suppress(Exception):
+                metadata["session_title"] = ctx._session_db.get_session_title(session_key)
         fut = self._schedule(
             ctx._status_adapter.send_clarify(
                 chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-                session_key=session_key, metadata=ctx._status_thread_metadata,
+                session_key=session_key, metadata=metadata,
             ),
             "Clarify send failed to schedule",
         )
