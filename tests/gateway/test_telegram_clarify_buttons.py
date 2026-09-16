@@ -1,9 +1,11 @@
-"""Tests for Telegram inline keyboard clarify buttons.
+"""Tests for Telegram clarify prompts.
 
-Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
-``cl:`` callback dispatch added in feat/clarify-gateway-buttons.
+Choices render as a native, non-anonymous Telegram poll whose last option flips the
+clarify into text capture; the vote arrives as a ``PollAnswer`` update. The legacy
+``cl:`` inline-button callback stays wired for prompts sent before the poll switch.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,13 +20,13 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
+from types import SimpleNamespace
 
-# ---------------------------------------------------------------------------
-# Minimal Telegram mock so TelegramAdapter can be imported (mirrors
-# test_telegram_approval_buttons.py)
-# ---------------------------------------------------------------------------
+import plugins.platforms.telegram.adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
+
+OTHER = "✏️ Outra — vou responder em texto"
 
 
 def _make_adapter(extra=None):
@@ -43,76 +45,254 @@ def _clear_clarify_state():
         cm._notify_cbs.clear()
 
 
+def _poll_message(poll_id="poll-1", message_id=100, chat_type="private"):
+    msg = MagicMock()
+    msg.message_id = message_id
+    msg.poll.id = poll_id
+    msg.chat.type = chat_type
+    return msg
+
+
+async def _send_poll_clarify(adapter, choices, clarify_id="cid1", session_key="sk1", metadata=None, poll_id="poll-1"):
+    adapter._bot.send_poll = AsyncMock(return_value=_poll_message(poll_id))
+    return await adapter.send_clarify(
+        chat_id="12345", question="Which option?", choices=choices,
+        clarify_id=clarify_id, session_key=session_key, metadata=metadata,
+    )
+
+
+def _vote_update(option_ids, poll_id="poll-1", user_id=777):
+    # Shape of telegram.Update carrying a PollAnswer (the telegram package is mocked in tests/gateway).
+    answer = SimpleNamespace(poll_id=poll_id, option_ids=list(option_ids),
+                             user=SimpleNamespace(id=user_id, first_name="Tester"), voter_chat=None)
+    return SimpleNamespace(poll_answer=answer)
+
+
+def _entry(clarify_id):
+    from tools import clarify_gateway as cm
+    with cm._lock:
+        return cm._entries.get(clarify_id)
+
+
 # ===========================================================================
-# send_clarify — render
+# send_clarify — native poll render
 # ===========================================================================
 
-class TestTelegramSendClarify:
-    """Verify the rendered prompt has buttons or none, and stores state."""
+class TestTelegramSendClarifyPoll:
 
     def setup_method(self):
         _clear_clarify_state()
 
     @pytest.mark.asyncio
-    async def test_multi_choice_renders_buttons_and_other(self):
+    async def test_choices_send_nonanonymous_poll_with_other_option(self):
+        from tools import clarify_gateway as cm
+        cm.register("cid1", "sk1", "Which option?", ["alpha", "beta", "gamma"])
         adapter = _make_adapter()
-        mock_msg = MagicMock()
-        mock_msg.message_id = 100
-        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="Which option?",
-            choices=["alpha", "beta", "gamma"],
-            clarify_id="cid1",
-            session_key="sk1",
-        )
+        result = await _send_poll_clarify(adapter, ["alpha", "beta", "gamma"])
 
         assert result.success is True
         assert result.message_id == "100"
-
-        kwargs = adapter._bot.send_message.call_args[1]
+        adapter._bot.send_message.assert_not_called()
+        kwargs = adapter._bot.send_poll.call_args[1]
         assert kwargs["chat_id"] == 12345
-        assert "Which option?" in kwargs["text"]
-        # Full option text rendered in the message body (not just buttons)
-        assert "1. alpha" in kwargs["text"]
-        assert "2. beta" in kwargs["text"]
-        assert "3. gamma" in kwargs["text"]
-        # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
-        markup = kwargs["reply_markup"]
-        assert markup is not None
-        # Mocked InlineKeyboardMarkup — just verify it was constructed
-        # with rows.  We check state instead of poking the mock structure.
-        assert "cid1" in adapter._clarify_state
-        assert adapter._clarify_state["cid1"] == "sk1"
-
-
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        assert kwargs["question"] == "Which option?"
+        assert kwargs["options"] == ["alpha", "beta", "gamma", OTHER]
+        assert kwargs["is_anonymous"] is False
+        assert kwargs["allows_multiple_answers"] is False
+        state = adapter._clarify_polls["poll-1"]
+        assert state["clarify_id"] == "cid1"
+        assert state["session_key"] == "sk1"
+        assert state["choices"] == ["alpha", "beta", "gamma"]
 
     @pytest.mark.asyncio
-    async def test_html_escapes_question(self):
+    async def test_multi_select_maps_to_allows_multiple_answers(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidM", "skM", "Which envs?", ["dev", "staging", "prod"], multi_select=True)
         adapter = _make_adapter()
-        mock_msg = MagicMock()
-        mock_msg.message_id = 103
-        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        await adapter.send_clarify(
-            chat_id="12345",
-            question="<script>alert(1)</script>",
-            choices=["x"],
-            clarify_id="cid5",
-            session_key="sk5",
-        )
-        kwargs = adapter._bot.send_message.call_args[1]
-        # Must NOT contain raw <script> — html.escape should have neutralized
-        assert "<script>" not in kwargs["text"]
-        assert "&lt;script&gt;" in kwargs["text"]
+        await _send_poll_clarify(adapter, ["dev", "staging", "prod"], clarify_id="cidM", session_key="skM")
+
+        assert adapter._bot.send_poll.call_args[1]["allows_multiple_answers"] is True
+
+    @pytest.mark.asyncio
+    async def test_session_title_from_metadata_labels_question(self):
+        adapter = _make_adapter()
+
+        await _send_poll_clarify(adapter, ["a", "b"], metadata={"session_title": "Deploy DirectData"})
+
+        question = adapter._bot.send_poll.call_args[1]["question"]
+        assert "Deploy DirectData" in question
+        assert "Which option?" in question
+        assert len(question) <= 300
+
+    @pytest.mark.asyncio
+    async def test_long_option_truncated_to_100_chars(self):
+        adapter = _make_adapter()
+        long_choice = "x" * 150
+
+        await _send_poll_clarify(adapter, [long_choice, "short"])
+
+        options = adapter._bot.send_poll.call_args[1]["options"]
+        assert all(len(o) <= 100 for o in options)
+        assert options[1] == "short"
+        assert adapter._clarify_polls["poll-1"]["choices"][0] == long_choice
+
+    @pytest.mark.asyncio
+    async def test_more_than_nine_choices_rejected_without_sending(self):
+        adapter = _make_adapter()
+        adapter._bot.send_poll = AsyncMock()
+
+        result = await adapter.send_clarify("12345", "Pick", [str(i) for i in range(10)], "cidX", "skX")
+
+        assert result.success is False
+        adapter._bot.send_poll.assert_not_called()
+        adapter._bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transport_failure_falls_back_to_text_capture(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidF", "skF", "Pick", ["alpha", "beta"])
+        adapter = _make_adapter()
+        adapter._bot.send_poll = AsyncMock(side_effect=RuntimeError("network down"))
+        sent_msg = MagicMock()
+        sent_msg.message_id = 101
+        adapter._bot.send_message = AsyncMock(return_value=sent_msg)
+
+        result = await adapter.send_clarify("12345", "Pick", ["alpha", "beta"], "cidF", "skF")
+
+        assert result.success is True
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "alpha" in text and "beta" in text
+        assert _entry("cidF").awaiting_text is True
+        assert adapter._clarify_polls == {}
+
+    @pytest.mark.asyncio
+    async def test_markup_in_question_sent_verbatim_as_plain_text(self):
+        adapter = _make_adapter()
+        adapter._bot.send_poll = AsyncMock(return_value=_poll_message())
+
+        await adapter.send_clarify("12345", "<script>alert(1)</script>", ["a", "b"], "cid5", "sk5")
+
+        # Poll questions are plain text (no parse mode): markup is shown literally, never interpreted.
+        kwargs = adapter._bot.send_poll.call_args[1]
+        assert kwargs["question"] == "<script>alert(1)</script>"
+        assert "question_parse_mode" not in kwargs
+
+    def test_poll_answer_handler_registered(self):
+        adapter = _make_adapter()
+        app = MagicMock()
+
+        with patch.object(tg_adapter, "PollAnswerHandler", lambda cb: ("poll_answer", cb)):
+            adapter._register_handlers(app)
+
+        handlers = [c.args[0] for c in app.add_handler.call_args_list]
+        assert ("poll_answer", adapter._handle_clarify_poll_answer) in handlers
 
 
 # ===========================================================================
-# Callback dispatch — _handle_callback_query routing for cl:* prefixes
+# PollAnswer — vote resolves the clarify
+# ===========================================================================
+
+class TestTelegramClarifyPollAnswer:
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_normal_vote_resolves_with_original_choice_text(self):
+        from tools import clarify_gateway as cm
+        long_choice = "y" * 150
+        cm.register("cidA", "skA", "Pick", ["red", long_choice])
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["red", long_choice], clarify_id="cidA", session_key="skA")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_clarify_poll_answer(_vote_update([1]), MagicMock())
+
+        entry = _entry("cidA")
+        assert entry.event.is_set()
+        assert entry.response == long_choice
+        assert "poll-1" not in adapter._clarify_polls
+
+    @pytest.mark.asyncio
+    async def test_other_vote_marks_awaiting_text(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidO", "skO", "Pick", ["a", "b"])
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["a", "b"], clarify_id="cidO", session_key="skO")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_clarify_poll_answer(_vote_update([2]), MagicMock())
+
+        entry = _entry("cidO")
+        assert entry.awaiting_text is True
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_retracted_vote_ignored(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidR", "skR", "Pick", ["a", "b"])
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["a", "b"], clarify_id="cidR", session_key="skR")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_clarify_poll_answer(_vote_update([]), MagicMock())
+
+        entry = _entry("cidR")
+        assert not entry.event.is_set()
+        assert entry.awaiting_text is False
+        assert "poll-1" in adapter._clarify_polls
+
+    @pytest.mark.asyncio
+    async def test_unknown_poll_id_ignored(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidU", "skU", "Pick", ["a", "b"])
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["a", "b"], clarify_id="cidU", session_key="skU")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_clarify_poll_answer(_vote_update([0], poll_id="someone-elses-poll"), MagicMock())
+
+        assert not _entry("cidU").event.is_set()
+        assert "poll-1" in adapter._clarify_polls
+
+    @pytest.mark.asyncio
+    async def test_multi_select_vote_resolves_json_array_of_choices(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidMS", "skMS", "Envs", ["dev", "staging", "prod"], multi_select=True)
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["dev", "staging", "prod"], clarify_id="cidMS", session_key="skMS")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_clarify_poll_answer(_vote_update([0, 2]), MagicMock())
+
+        assert json.loads(_entry("cidMS").response) == ["dev", "prod"]
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_voter_ignored(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidD", "skD", "Pick", ["a", "b"])
+        adapter = _make_adapter()
+        await _send_poll_clarify(adapter, ["a", "b"], clarify_id="cidD", session_key="skD")
+
+        class _DenyRunner:
+            async def _handle_message(self, event):
+                return None
+
+            def _is_user_authorized(self, source):
+                return False
+
+        adapter._message_handler = _DenyRunner()._handle_message
+
+        await adapter._handle_clarify_poll_answer(_vote_update([0], user_id=999), MagicMock())
+
+        assert not _entry("cidD").event.is_set()
+        assert "poll-1" in adapter._clarify_polls
+
+
+# ===========================================================================
+# Legacy cl: callback — prompts sent as inline buttons before the poll switch
 # ===========================================================================
 
 class TestTelegramClarifyCallback:
@@ -126,7 +306,6 @@ class TestTelegramClarifyCallback:
         from tools import clarify_gateway as cm
 
         adapter = _make_adapter()
-        # Pre-register a clarify entry so the callback can look up the choice text
         cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
         adapter._clarify_state["cidA"] = "sk-cb"
 
@@ -148,21 +327,13 @@ class TestTelegramClarifyCallback:
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
             await adapter._handle_callback_query(update, context)
 
-        # State popped
         assert "cidA" not in adapter._clarify_state
-        # Wait shouldn't be needed — resolve_gateway_clarify is sync.
-        # The entry's response should be set.
-        # We test by reading the entry's response directly.
-        with cm._lock:
-            entry = cm._entries.get("cidA")
-        # Entry might be popped by wait_for_response, but here we never
-        # called wait — so it's still in _entries with response set.
+        entry = _entry("cidA")
         assert entry is not None
         assert entry.response == "green"
         assert entry.event.is_set()
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
-
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):
@@ -172,7 +343,6 @@ class TestTelegramClarifyCallback:
         cm.register("cidC", "sk-auth", "Pick", ["a", "b"])
         adapter._clarify_state["cidC"] = "sk-auth"
 
-        # Hook up a runner that says NOT authorized
         class _DenyRunner:
             async def _handle_message(self, event):
                 return None
@@ -199,14 +369,11 @@ class TestTelegramClarifyCallback:
 
         await adapter._handle_callback_query(update, context)
 
-        # Must not resolve, must answer with not-authorized message
-        with cm._lock:
-            entry = cm._entries.get("cidC")
+        entry = _entry("cidC")
         assert entry is not None
         assert not entry.event.is_set()
         query.answer.assert_called_once()
         assert "not authorized" in query.answer.call_args[1]["text"].lower()
-        # State preserved
         assert adapter._clarify_state["cidC"] == "sk-auth"
 
 
@@ -221,12 +388,10 @@ class TestBaseAdapterClarifyFallback:
     async def test_numbered_text_fallback(self):
         from gateway.platforms.base import BasePlatformAdapter, SendResult
 
-        # Subclass just enough to instantiate
         class _Stub(BasePlatformAdapter):
             name = "stub"
 
             def __init__(self):
-                # Skip base __init__ — we're not exercising it
                 self.sent: list = []
 
             async def connect(self, *, is_reconnect: bool = False): pass
@@ -253,4 +418,3 @@ class TestBaseAdapterClarifyFallback:
         assert "Pick a fruit" in text
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
-

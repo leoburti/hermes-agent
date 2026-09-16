@@ -159,9 +159,10 @@ async def test_send_clarify_failure_redacts_token_in_result_and_log(caplog):
     """A send_clarify() transport exception embedding the bot token URL must
     not reach the warning log or SendResult.error unredacted."""
     adapter = _make_connected_adapter()
-    adapter._send_message_with_thread_fallback = AsyncMock(
-        side_effect=RuntimeError(f"Timed out requesting {_SECRET_SEND_URL}")
-    )
+    transport_error = RuntimeError(f"Timed out requesting {_SECRET_SEND_URL}")
+    adapter._bot.send_poll = AsyncMock(side_effect=transport_error)
+    # The poll failure falls back to text capture; make that transport fail the same way.
+    adapter._bot.send_message = AsyncMock(side_effect=transport_error)
 
     with caplog.at_level("WARNING"):
         result = await adapter.send_clarify("123", "q?", ["a", "b"], "cid", "sess")

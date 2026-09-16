@@ -110,7 +110,7 @@ try:
         LinkPreviewOptions = None
     from telegram.ext import (
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler as TelegramMessageHandler,
-        ContextTypes, TypeHandler, filters)
+        ContextTypes, PollAnswerHandler, TypeHandler, filters)
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -118,6 +118,7 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
+    PollAnswerHandler = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
@@ -220,7 +221,7 @@ def check_telegram_requirements() -> bool:
     """Lazy-install python-telegram-bot if missing, then re-import and rebind the module aliases."""
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler, PollAnswerHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
@@ -238,7 +239,7 @@ def check_telegram_requirements() -> bool:
         LinkPreviewOptions = getattr(_tg, "LinkPreviewOptions", None)
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler = (
             getattr(_ext, n) for n in ("Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler", "MessageHandler"))
-        ContextTypes, filters, TypeHandler = _ext.ContextTypes, _ext.filters, _ext.TypeHandler
+        ContextTypes, filters, TypeHandler, PollAnswerHandler = _ext.ContextTypes, _ext.filters, _ext.TypeHandler, _ext.PollAnswerHandler
         ParseMode, ChatType = _const.ParseMode, _const.ChatType
         HTTPXRequest = _req.HTTPXRequest
     except (ImportError, AttributeError):
@@ -522,7 +523,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._choice_picker_state: Dict[str, dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
-        self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
+        self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key (legacy cl: buttons)
+        self._clarify_polls: Dict[str, Dict[str, Any]] = {}  # poll_id → clarify_id/session_key/choices/chat context
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -2741,6 +2743,7 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        app.add_handler(PollAnswerHandler(self._handle_clarify_poll_answer))  # native-poll clarify votes
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
@@ -3877,24 +3880,58 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_slash_confirm", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
+    _CLARIFY_POLL_OTHER = "✏️ Outra — vou responder em texto"
+    _CLARIFY_POLL_MAX_CHOICES = 9  # + the "Outra" option = 10 poll options
+    _POLL_QUESTION_MAX, _POLL_OPTION_MAX = 300, 100
+
+    @staticmethod
+    def _cut(text: str, limit: int) -> str:
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
-        text-capture mode); without choices, plain question and the gateway text-intercept captures."""
-        def build():
-            text = f"❓ {_html.escape(question)}"
-            keyboard = None
-            if choices:
-                # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
-                text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
-                keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
-        return await self._send_prompt(
-            "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
+        """Render a clarify prompt. Choices → a native non-anonymous poll (each option cut to 100 chars) plus
+        "✏️ Outra — vou responder em texto"; votes arrive in ``_handle_clarify_poll_answer`` via ``_clarify_polls``.
+        Only a failed poll send falls back to the base numbered-text capture. Without choices, plain question and the
+        gateway text-intercept captures. ``metadata["session_title"]``, when present, labels the question."""
+        title = str((metadata or {}).get("session_title") or "").strip()
+        labelled = f"[{title}] {question}" if title else question
+        if not choices:
+            return await self._send_prompt(
+                "send_clarify", chat_id, metadata,
+                lambda: (f"❓ {_html.escape(labelled)}", None, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)),
+                parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
+        choices = [str(c) for c in choices]
+        if len(choices) > self._CLARIFY_POLL_MAX_CHOICES:
+            return SendResult(success=False, error=f"clarify poll supports at most {self._CLARIFY_POLL_MAX_CHOICES} choices")
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        from tools import clarify_gateway as _cg
+        with _cg._lock:
+            multi_select = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+            # Forget polls whose clarify already ended (typed answer, timeout, /new): no vote can resolve them.
+            for stale in [p for p, s in self._clarify_polls.items() if s["clarify_id"] not in _cg._entries]:
+                del self._clarify_polls[stale]
+        thread_id = self._metadata_thread_id(metadata)
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+        try:
+            msg = await self._bot.send_poll(
+                chat_id=normalize_telegram_chat_id(chat_id), question=self._cut(labelled, self._POLL_QUESTION_MAX),
+                options=[self._cut(c, self._POLL_OPTION_MAX) for c in choices] + [self._CLARIFY_POLL_OTHER],
+                is_anonymous=False,  # anonymous polls never emit poll_answer updates
+                allows_multiple_answers=multi_select, reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id))
+        except Exception as e:
+            logger.warning(
+                "[%s] clarify poll send failed, falling back to text capture: %s", self.name, _redact_telegram_error_text(e))
+            return await super().send_clarify(chat_id, labelled, choices, clarify_id, session_key, metadata=metadata)
+        chat_type = getattr(getattr(msg, "chat", None), "type", None)
+        # PollAnswer carries no chat: keep the chat context here for the voter authorization gate.
+        self._clarify_polls[str(msg.poll.id)] = {
+            "clarify_id": clarify_id, "session_key": session_key, "choices": choices, "multi_select": multi_select,
+            "chat_id": str(chat_id), "chat_type": str(chat_type) if chat_type is not None else None, "thread_id": thread_id}
+        return SendResult(success=True, message_id=str(msg.message_id))
 
     @staticmethod
     def _provider_get_label():
@@ -4469,6 +4506,39 @@ class TelegramAdapter(BasePlatformAdapter):
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+
+    async def _handle_clarify_poll_answer(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        """Native-poll clarify vote. Ignored: polls this adapter didn't send, retracted votes (empty ``option_ids``),
+        chat-identity voters and unauthorized users. "Outra" flips to text capture (poll state kept so a re-vote on a
+        choice still resolves); a choice resolves with the ORIGINAL choice text (JSON list for multi-select)."""
+        answer = getattr(update, "poll_answer", None)
+        poll_id = str(getattr(answer, "poll_id", "") or "")
+        state = self._clarify_polls.get(poll_id)
+        user = getattr(answer, "user", None)
+        option_ids = list(getattr(answer, "option_ids", None) or ())
+        if state is None or not option_ids or user is None:
+            return
+        if not self._is_callback_user_authorized(
+                str(getattr(user, "id", "")), chat_id=state["chat_id"], chat_type=state["chat_type"],
+                thread_id=state["thread_id"], user_name=getattr(user, "first_name", None)):
+            logger.info("[%s] Ignoring clarify poll vote from unauthorized user %s", self.name, getattr(user, "id", "?"))
+            return
+        from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+        choices, clarify_id = state["choices"], state["clarify_id"]
+        if len(choices) in option_ids:  # "Outra" is the option after the choices
+            if not mark_awaiting_text(clarify_id):
+                self._clarify_polls.pop(poll_id, None)  # entry evicted / gateway restarted
+            return
+        picked = [choices[i] for i in option_ids if 0 <= i < len(choices)]
+        if not picked:
+            return
+        # Multi-select answers use the same JSON-array shape as a typed "1, 3" reply (decoded tool-side).
+        response = json.dumps([c.strip() for c in picked], ensure_ascii=False) if state["multi_select"] else picked[0]
+        self._clarify_polls.pop(poll_id, None)
+        if resolve_gateway_clarify(clarify_id, response):
+            logger.info("Telegram clarify poll resolved (id=%s, user=%s)", clarify_id, getattr(user, "id", "?"))
+        else:
+            logger.warning("Telegram clarify poll vote arrived after the prompt ended (id=%s)", clarify_id)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""
