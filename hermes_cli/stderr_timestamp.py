@@ -38,9 +38,33 @@ def stamp_line(line: str) -> str:
     return f"{prefix}{rendered}\n"
 
 
+_WRITE_FAILURE_REPORTED = False
+
+
 def _write_timestamped_line(log_file: TextIO, line: str) -> None:
-    log_file.write(stamp_line(line))
-    log_file.flush()
+    """Write one stamped line; on a full/failing disk drop it instead of dying.
+
+    Incident SRLMM005 2026-10-21 11:10: ENOSPC here killed this wrapper, launchd then
+    SIGTERMed the gateway and every running kanban worker was lost. Losing log lines is
+    strictly better than losing the supervised process, so OSError is swallowed (one
+    warning per process, best effort) and the pump keeps draining the child's pipe.
+    """
+    global _WRITE_FAILURE_REPORTED
+    try:
+        log_file.write(stamp_line(line))
+        log_file.flush()
+    except OSError as exc:
+        if not _WRITE_FAILURE_REPORTED:
+            _WRITE_FAILURE_REPORTED = True
+            try:
+                os.write(2, f"stderr_timestamp: log write failed ({exc}); dropping lines until it recovers\n".encode())
+            except OSError:
+                pass
+        # Drop what may still sit in the text buffer so the next flush does not raise again.
+        try:
+            log_file.seek(0, os.SEEK_END)
+        except (OSError, ValueError):
+            pass
 
 
 def _open_log(log_path: Path) -> TextIO:

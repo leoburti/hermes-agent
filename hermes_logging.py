@@ -10,6 +10,7 @@ import atexit
 import contextlib
 import copy
 import io
+import errno
 import logging
 import os
 import queue
@@ -231,7 +232,7 @@ def _warn_windows_lock_timeout_once() -> None:
 def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
     """True when a file handler lost its backing stream during teardown or I/O."""
     return (
-        (isinstance(exc, OSError) and exc.errno == 5)
+        (isinstance(exc, OSError) and exc.errno in (errno.EIO, errno.ENOSPC, errno.EDQUOT))
         or (isinstance(exc, ValueError) and "closed file" in str(exc).lower())
     )
 

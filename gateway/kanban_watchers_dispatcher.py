@@ -129,9 +129,12 @@ class _KanbanDispatcher:
 
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
-    def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
+    def __init__(self, kb: Any, settings: _DispatcherSettings, disk_guard: Any = None) -> None:
         self.kb = kb
         self.settings = settings
+        # Optional DiskGuard (gateway/kanban_disk_guard.py): below the free-space floor the
+        # tick still runs (reclaim/promote) but spawns nothing (max_spawn=0).
+        self.disk_guard = disk_guard
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
@@ -184,6 +187,8 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        if self.disk_guard is not None and not self.disk_guard.spawn_allowed():
+            kwargs["max_spawn"] = 0
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

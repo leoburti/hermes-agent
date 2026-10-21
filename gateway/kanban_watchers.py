@@ -279,7 +279,8 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
-        dispatcher = _KanbanDispatcher(_kb, settings)
+        from gateway.kanban_disk_guard import DiskGuard
+        dispatcher = _KanbanDispatcher(_kb, settings, disk_guard=DiskGuard(kanban_cfg))
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
