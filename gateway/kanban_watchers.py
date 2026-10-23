@@ -281,6 +281,8 @@ class GatewayKanbanWatchersMixin:
         results: Optional[list] = None
         from gateway.kanban_disk_guard import DiskGuard
         dispatcher = _KanbanDispatcher(_kb, settings, disk_guard=DiskGuard(kanban_cfg))
+        from hermes_cli.kanban_worktree_reclaim import DailySweeper
+        worktree_sweeper = DailySweeper(kanban_cfg)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -327,6 +329,14 @@ class GatewayKanbanWatchersMixin:
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
+
+            # Daily orphan-worktree sweep (node_modules reclaim + prune). Never
+            # blocks dispatch: a failure is logged and retried next interval.
+            if worktree_sweeper.due():
+                try:
+                    await _to_thread_process_service(worktree_sweeper.run, _kb)
+                except Exception:
+                    logger.exception("kanban dispatcher: worktree sweep failed")
 
             await self._sleep_between_ticks(interval)
 
