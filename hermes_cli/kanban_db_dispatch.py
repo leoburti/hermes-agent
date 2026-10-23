@@ -2860,6 +2860,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    # One global pnpm store + shared-file import so each worktree's
+    # `pnpm install` costs tens of MB, not ~2 GB (SRLMM005 2026-10-22).
+    from hermes_cli.kanban_pnpm_env import apply_pnpm_store_env, load_kanban_cfg
+    apply_pnpm_store_env(env, load_kanban_cfg())
+
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
     # The worker is `-m hermes_cli.kanban_worker_client`: Hermes itself, with no console-script
     # bootstrap. The routed-profile scrub above strips Hermes-owned PYTHONPATH entries (user
