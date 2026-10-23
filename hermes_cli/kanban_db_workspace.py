@@ -451,6 +451,9 @@ def _cleanup_worktree_workspace(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,
             )
+            # Keep the work, drop the ~2 GB of regenerable node_modules/.turbo.
+            from hermes_cli.kanban_worktree_reclaim import reclaim_build_artifacts
+            reclaim_build_artifacts(wp)
             return
         # Windows cannot delete a directory while this process has its current
         # directory inside it. Completed workers normally run from their own
@@ -487,6 +490,8 @@ def _cleanup_worktree_workspace(
                 "git worktree remove failed for task %s at %s: %s",
                 task_id, wp, (result.stderr or result.stdout or "").strip(),
             )
+            from hermes_cli.kanban_worktree_reclaim import reclaim_build_artifacts
+            reclaim_build_artifacts(wp)
             return
         _kb._log.debug("Removed worktree workspace: %s", wp)
         branch = (branch_name or "").strip() or f"wt/{task_id}"
