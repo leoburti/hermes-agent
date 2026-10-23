@@ -218,7 +218,10 @@ def kanban_sweep_inputs(kb) -> tuple[set[str], set[str]]:
                 root = str(Path(r.stdout.strip()).parent)
                 roots.add(root)
         try:
-            conn = kb.connect(board=meta["slug"])
+            _connect = getattr(kb, "connect", None)
+            if _connect is None:  # kanban_db re-exports only part of kanban_db_connect
+                from hermes_cli.kanban_db_connect import connect as _connect
+            conn = _connect(board=meta["slug"])
             try:
                 for row in conn.execute(
                         "SELECT workspace_path FROM tasks WHERE workspace_path IS NOT NULL "
