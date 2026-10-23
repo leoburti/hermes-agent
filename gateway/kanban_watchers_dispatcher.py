@@ -187,8 +187,13 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
-        if self.disk_guard is not None and not self.disk_guard.spawn_allowed():
-            kwargs["max_spawn"] = 0
+        if self.disk_guard is not None:
+            guard_state = (self.disk_guard.state() if hasattr(self.disk_guard, "state")
+                           else ("ok" if self.disk_guard.spawn_allowed() else "no_spawn"))
+            if guard_state == "paused":
+                return None  # critically low disk: no claims/promotions this tick
+            if guard_state != "ok":
+                kwargs["max_spawn"] = 0
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
