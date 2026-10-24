@@ -7,6 +7,7 @@ untracked scratch (archived first) and branches whose content is on upstream.
 
 from __future__ import annotations
 
+from hermes_cli.worktree_root import worktrees_dir_for as _worktrees_dir_for
 import contextlib
 import logging
 import os
@@ -179,7 +180,7 @@ def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
     if result.returncode != 0:
         return []
 
-    managed_root = os.path.realpath(str(Path(repo_root) / ".worktrees"))
+    managed_root = os.path.realpath(str(_worktrees_dir_for(repo_root)))
     main_root = os.path.realpath(repo_root)
 
     records: list[ExternalTreeRecord] = []
@@ -248,7 +249,7 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
     ("too recent"). It never widens eligibility — age alone can't doom a tree carrying unmerged work.
     """
     from hermes_cli import worktree_ops as _ops
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir = _worktrees_dir_for(repo_root)
     if not worktrees_dir.exists():
         return []
 
@@ -424,7 +425,7 @@ def reclaim_branches(
 
 def worktrees_summary(repo_root: str) -> tuple[int, Optional[int]]:
     """(tree_count, total_size_mb) for the escalation notice; size is best-effort with a timeout."""
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir = _worktrees_dir_for(repo_root)
     if not worktrees_dir.exists():
         return 0, None
     try:

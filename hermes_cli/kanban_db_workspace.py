@@ -697,6 +697,11 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
         return
+    from hermes_cli.worktree_root import configured_root, ensure_worktree_root_ready
+    ext = configured_root()
+    if ext is not None and _path_key(target.resolve(strict=False)).startswith(
+            _path_key(ext.resolve(strict=False)).rstrip(os.sep) + os.sep):
+        ensure_worktree_root_ready()  # raises WorktreeRootError (a RuntimeError); nothing created
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
@@ -712,7 +717,8 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
     """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
-    target = repo_root / ".worktrees" / task_id
+    from hermes_cli.worktree_root import worktrees_dir_for
+    target = worktrees_dir_for(repo_root) / task_id
     _ensure_git_worktree(repo_root, target, branch_name)
     return target, branch_name
 
@@ -767,7 +773,8 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         # unsafe under concurrency — so fall back to our own worktree.
         fallback_root = _repo_root_for_worktree_target(requested.parent)
         if fallback_root is not None:
-            fallback = fallback_root / ".worktrees" / task.id
+            from hermes_cli.worktree_root import worktrees_dir_for
+            fallback = worktrees_dir_for(fallback_root) / task.id
             if _path_key(fallback.resolve(strict=False)) != _path_key(requested_resolved):
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name

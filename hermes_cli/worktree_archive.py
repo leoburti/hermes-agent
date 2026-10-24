@@ -19,6 +19,7 @@ tree; an embedded repository inside an ignored directory keeps it (``worktree_re
 
 from __future__ import annotations
 
+from hermes_cli.worktree_root import worktrees_dir_for as _worktrees_dir_for
 import json
 import logging
 import os
@@ -395,7 +396,7 @@ def restore_archive(repo_root: str, name: str, target=None) -> dict:
     meta = arc.meta
     head = meta.get("head") or f"{arc.sha}^1"
     index_commit = meta.get("index_commit") or f"{arc.sha}^2"
-    dest = Path(target or meta.get("path") or Path(repo_root) / ".worktrees" / arc.name).absolute()
+    dest = Path(target or meta.get("path") or _worktrees_dir_for(repo_root) / arc.name).absolute()
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         raise ArchiveError(f"{dest} already exists; pass a different path")
     env = _env(repo_root)

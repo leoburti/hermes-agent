@@ -12,6 +12,7 @@ created; any other missing directory is left alone (the resume warns as before).
 
 from __future__ import annotations
 
+from hermes_cli.worktree_root import worktrees_dir_for as _worktrees_dir_for
 import logging
 import os
 import subprocess
@@ -76,7 +77,7 @@ def _recorded_tree_for(cwd: str) -> Optional[dict]:
         branch = str(entry.get("branch") or "")
         # Only a direct child of the repo's Hermes worktree dir, as _setup_worktree makes them.
         if (branch and (repo / ".git").exists()
-                and _key(tree.parent) == _key(repo / ".worktrees") and _key(tree) == _key(candidate)):
+                and _key(tree.parent) == _key(_worktrees_dir_for(repo)) and _key(tree) == _key(candidate)):
             return {"path": str(tree), "branch": branch, "repo_root": str(repo)}
         return None
     return None
