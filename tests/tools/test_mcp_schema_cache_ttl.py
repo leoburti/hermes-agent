@@ -49,3 +49,13 @@ def test_cache_scope_round_trips():
         "srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000, cache_scope="private"
     )
     assert sc.get_cached_entry("srv", "fp")["cache_scope"] == "private"
+
+
+
+@pytest.mark.parametrize("ttl", [0, 0.0, -1])
+def test_zero_or_negative_ttl_is_no_ttl(monkeypatch, ttl):
+    """mcp 2.x defaults ttl_ms to 0 when the server sends no hint: that must not expire the entry."""
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=ttl)
+    later = time.time() + 10 * 365 * 86400
+    monkeypatch.setattr(sc.time, "time", lambda: later)
+    assert sc.get_cached_entry("srv", "fp") is not None

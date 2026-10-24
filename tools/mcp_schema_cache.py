@@ -67,7 +67,10 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
+    # mcp 2.x ListToolsResult defaults ``ttl_ms`` to 0 when the server sends no hint; treating 0 as
+    # "expired immediately" made every lazy server miss the cache and spawn at boot. ``<= 0`` = no TTL.
+    expired = (isinstance(ttl_ms, (int, float)) and not isinstance(ttl_ms, bool) and ttl_ms > 0
+               and isinstance(written_at, (int, float))
                and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
     return None if expired else entry
 
