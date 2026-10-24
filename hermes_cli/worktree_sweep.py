@@ -17,6 +17,7 @@ applies a frozen plan.
 
 from __future__ import annotations
 
+from hermes_cli.worktree_root import worktrees_dir_for as _worktrees_dir_for
 import logging
 import os
 import subprocess
@@ -255,7 +256,7 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
     from hermes_cli import worktree_ops as ops
     settings = settings or sweep_settings()
     now = now or time.time()
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir = _worktrees_dir_for(repo_root)
     if not worktrees_dir.is_dir():
         return []
     candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now)

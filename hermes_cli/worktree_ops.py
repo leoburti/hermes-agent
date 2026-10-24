@@ -438,8 +438,12 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
                or f"hermes-{uuid.uuid4().hex[:8]}")
     branch_name = f"hermes/{wt_name}"
 
-    worktrees_dir = Path(repo_root) / ".worktrees"
-    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_cli.worktree_root import WorktreeRootError, prepare_worktrees_dir
+    try:
+        worktrees_dir = prepare_worktrees_dir(repo_root)
+    except WorktreeRootError as e:
+        _cprint(f"\033[31m✗ {e}\033[0m")
+        return None
     wt_path = worktrees_dir / wt_name
     if name and wt_path.exists():
         _cprint(f"\033[31m✗ Worktree already exists: {wt_path}\033[0m")
@@ -1184,7 +1188,8 @@ def _reclaim_orphan_install_states() -> None:
 
 
 def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    from hermes_cli.worktree_root import worktrees_dir_for
+    worktrees_dir = worktrees_dir_for(repo_root)
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
         return

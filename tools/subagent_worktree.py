@@ -81,9 +81,13 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         return None
     wt_name = f"subagent-{(subagent_id or uuid.uuid4().hex[:8]).replace('/', '-')}"
     branch = f"hermes-subagent/{wt_name}"
-    wt_path = Path(repo_root) / ".worktrees" / wt_name
+    from hermes_cli.worktree_root import WorktreeRootError, prepare_worktrees_dir
     try:
-        wt_path.parent.mkdir(parents=True, exist_ok=True)
+        wt_path = prepare_worktrees_dir(repo_root) / wt_name
+    except WorktreeRootError as e:
+        logger.warning("subagent worktree: %s", e)
+        return None
+    try:
         _ensure_gitignore_entry(repo_root)
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""

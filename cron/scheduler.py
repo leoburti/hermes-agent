@@ -3,6 +3,7 @@
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
 
+from hermes_cli.worktree_root import worktrees_dir_for as _worktrees_dir_for
 import atexit
 import concurrent.futures
 import contextlib
@@ -4066,7 +4067,7 @@ def _worktree_maintenance_repos() -> list[str]:
             except Exception:
                 continue
 
-    return [r for r in sorted(repos) if (Path(r) / ".worktrees").is_dir()]
+    return [r for r in sorted(repos) if _worktrees_dir_for(r).is_dir()]
 
 
 def _maybe_run_worktree_maintenance() -> None:

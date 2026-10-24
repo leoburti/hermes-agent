@@ -64,6 +64,13 @@ def _git_line(cwd: str, args: list[str]) -> str:
     return _git_out(cwd, args).strip()
 
 
+def _prepare_worktrees_dir(root: str) -> str:
+    """Worktrees dir for ``root`` (honours HERMES_WORKTREE_ROOT; raises if its guard fails)."""
+    from hermes_cli.worktree_root import ensure_worktree_root_ready, worktrees_dir_for
+    ensure_worktree_root_ready()
+    return str(worktrees_dir_for(root))
+
+
 def _git_ok(cwd: str, args: list[str]) -> None:
     """Run a git mutation, raising RuntimeError with stderr on failure."""
     code, _, err = _git(cwd, args)
@@ -694,7 +701,7 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if not remote and existing == _default_branch(root):
         _git_ok(root, ["switch", existing])
         return {"path": root, "branch": existing, "repoRoot": root}
-    target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
+    target = _unique_dir(os.path.join(_prepare_worktrees_dir(root), _slugify(existing)))
     if remote:
         # Best-effort freshness: on failure (offline, branch gone) the last known ref is still
         # there to branch from.
@@ -726,7 +733,7 @@ def worktree_add(cwd: str, options: dict) -> dict:
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
     branch = _sanitize_branch(options.get("branch") or "") or f"hermes/{slug}"
-    target = _unique_dir(os.path.join(root, ".worktrees", slug))
+    target = _unique_dir(os.path.join(_prepare_worktrees_dir(root), slug))
     args = ["worktree", "add", "-b", branch, target]
     if options.get("base"):
         base = str(options["base"])
