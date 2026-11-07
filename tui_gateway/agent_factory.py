@@ -211,6 +211,14 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    # Resume reads the nested ``gateway_runtime`` FIRST (``SessionDB.session_gateway_runtime``). A route an
+    # earlier gateway turn left there (e.g. a fallback) would pair this model with that provider (#146345):
+    # the later writer wins in both shapes, like ``update_session_model`` (#79536).
+    if isinstance(config.get("gateway_runtime"), dict):
+        if config.get("provider"):
+            config["gateway_runtime"] = {k: config[k] for k in ("provider", "base_url", "api_mode") if config.get(k)}
+        else:
+            config.pop("gateway_runtime")
     return config
 
 
